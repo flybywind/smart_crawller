@@ -1,15 +1,22 @@
 package main
 
 import (
-	"fmt"
 	"smart_crawller/spider"
 )
 
 func main() {
-	fmt.Println(spider.GetFullNormalizeUrl("http://abc.com", ""))
-	fmt.Println(spider.GetFullNormalizeUrl("http://abc.com", "http://xyz.com"))
-	fmt.Println(spider.GetFullNormalizeUrl("http://abc.com", "/ABC"))
-	fmt.Println(spider.GetFullNormalizeUrl("HTtp://abc.com", "/ABC"))
-	fmt.Println(spider.GetFullNormalizeUrl("http://abc.com/a/b/x", "ABC"))
-	fmt.Println(spider.GetFullNormalizeUrl("http://abc.com/a/b/x", "ABc"))
+	digu := spider.SiteNode{
+		Url:          "http://www.digu.com/",
+		NextSelector: "div.pin.index_cate a.png24.tag_link",
+		NextNode: func() spider.SiteNode {
+			return spider.SiteNode{
+				IsContainer:  true,
+				NextSelector: "div.watefall_pin.PinImage img[src][jpeg]",
+				NextNode:     nil,
+			}
+		},
+	}
+	target := []spider.SiteNode{digu}
+	spd := spider.NewSpider(target, 4, "/Users/flybywind/Downloads/tmp")
+	spd.Run()
 }

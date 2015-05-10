@@ -8,6 +8,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // 用户定义的网站结构
@@ -47,7 +48,7 @@ type ResourceInfo struct {
 	TypeOf       string
 }
 
-type spider struct {
+type Spider struct {
 	targetSite    []SiteNode
 	threadNum     int
 	storePath     string
@@ -56,18 +57,18 @@ type spider struct {
 	doneChan      chan bool
 }
 
-func NewSpider(targets []SiteNode, thread_num int, store_path string) *spider {
-	spd := new(spider)
+func NewSpider(targets []SiteNode, thread_num int, store_path string) *Spider {
+	spd := new(Spider)
 	spd.threadNum = thread_num
 	spd.storePath = store_path
 	spd.targetSite = targets
 
 	spd.workersChan = make(chan SiteNode, spd.threadNum)
-	spd.waitParseChan = make(chan SiteNode, spd.threadNum*100)
+	spd.waitParseChan = make(chan SiteNode, spd.threadNum*20)
 	spd.doneChan = make(chan bool, spd.threadNum)
 	return spd
 }
-func (spd spider) Run() {
+func (spd Spider) Run() {
 	go func() {
 		for _, target := range spd.targetSite {
 			spd.waitParseChan <- target
@@ -89,7 +90,7 @@ func (spd spider) Run() {
 	}
 }
 
-func (s spider) parseNext(waitParseChan chan<- SiteNode,
+func (s Spider) parseNext(waitParseChan chan<- SiteNode,
 	workersChan <-chan SiteNode) {
 	for curNode := range workersChan {
 		doc, err := goquery.NewDocument(curNode.Url)
@@ -113,15 +114,25 @@ func (s spider) parseNext(waitParseChan chan<- SiteNode,
 			doc.Add(sel).Each(func(i int, sel *goquery.Selection) {
 				if attrVal, exist := sel.Attr(attr); exist {
 					url := GetFullNormalizeUrl(curNode.Url, attrVal)
-					md5sum := fmt.Sprintf("%v", md5.Sum([]byte(url)))
+					md5sum := fmt.Sprintf("%x", md5.Sum([]byte(url)))
 					seg := strings.Split(url, ".")
 					suffix := defaultSuffix
 					if len(seg) > 1 {
 						suffix = seg[len(seg)-1]
 					}
 					savePath := s.storePath + "/" + md5sum + "." + suffix
-					cmd := exec.Command("wget", url, "-O", savePath)
-					err := cmd.Start()
+					retryDownload := func() error {
+						cmd := exec.Command("wget", url, "-O", savePath)
+						cmd.Start()
+						err := cmd.Wait()
+						return err
+					}
+					n := 0
+					var err error
+					for err = retryDownload(); err != nil && n < 3; n++ {
+						time.Sleep(5 * time.Second)
+						log.Println("retry ["+url+"]", n, "times")
+					}
 					if err != nil {
 						log.Fatal("Download ["+url+"] failed, error is:\n", err)
 					} else {
@@ -135,6 +146,7 @@ func (s spider) parseNext(waitParseChan chan<- SiteNode,
 				if href, exist := sel.Attr("href"); exist {
 					nextNode := curNode.NextNode()
 					nextNode.Url = GetFullNormalizeUrl(curNode.Url, href)
+					log.Println("find an intemediat page:", nextNode.Url)
 					allParseOut = append(allParseOut, nextNode)
 				}
 			})

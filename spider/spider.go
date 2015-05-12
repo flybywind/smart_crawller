@@ -2,13 +2,15 @@ package spider
 
 import (
 	"crypto/md5"
+	"encoding/gob"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/PuerkitoBio/purell"
+	"io/ioutil"
 	"log"
-	"os/exec"
+	"net/http"
+	"os"
 	"strings"
-	"time"
 )
 
 // 用户定义的网站结构
@@ -32,26 +34,66 @@ type SpiderHistory interface {
 // 用gobson保存历史信息
 type SpiderHistoryMem struct {
 	path string
+	mem  map[string]ResourceInfo
 }
 
-func (h *SpiderHistoryMem) SetPath(p string) {
+func (h *SpiderHistoryMem) Init(p string) {
 	h.path = p
+	if file, err := os.Open(p); err == nil {
+		decoder := gob.NewDecoder(file)
+		defer file.Close()
+		decoder.Decode(&h.mem)
+	} else {
+		h.mem = make(map[string]ResourceInfo)
+		fmt.Println("SpiderHistoryMem:", p, "not exist, create new !")
+	}
 }
 
-// TODO: 完成SpiderHistoryMem
+func (h *SpiderHistoryMem) Exist(k string) bool {
+	_, exist := h.mem[k]
+	return exist
+}
+
+func (h *SpiderHistoryMem) Get(k string) ResourceInfo {
+	if h.Exist(k) {
+		return h.mem[k]
+	} else {
+		return ResourceInfo{}
+	}
+}
+func (h *SpiderHistoryMem) Set(k string, v ResourceInfo) {
+	v.Md5 = k
+	h.mem[k] = v
+}
+
+func (h SpiderHistoryMem) Save() bool {
+	file, err := os.Create(h.path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	writer := gob.NewEncoder(file)
+	if err := writer.Encode(h.mem); err != nil {
+		return false
+	} else {
+		return true
+	}
+}
+
 /////////////////////
 
 // 每个资源的信息，包括保持路径，说明信息，类型
 type ResourceInfo struct {
-	SavePath     string
+	Md5          string
+	ResourceUrl  string
 	ResourceInfo string
-	TypeOf       string
 }
 
 type Spider struct {
 	targetSite    []SiteNode
 	threadNum     int
 	storePath     string
+	spiderMem     SpiderHistoryMem
 	waitParseChan chan SiteNode
 	workersChan   chan SiteNode
 	doneChan      chan bool
@@ -69,6 +111,8 @@ func NewSpider(targets []SiteNode, thread_num int, store_path string) *Spider {
 	return spd
 }
 func (spd Spider) Run() {
+	spd.spiderMem.Init("spider.mem")
+	defer spd.spiderMem.Save()
 	go func() {
 		for _, target := range spd.targetSite {
 			spd.waitParseChan <- target
@@ -88,6 +132,7 @@ func (spd Spider) Run() {
 		<-spd.doneChan
 		log.Println("worker finish:", i)
 	}
+
 }
 
 func (s Spider) parseNext(waitParseChan chan<- SiteNode,
@@ -111,6 +156,8 @@ func (s Spider) parseNext(waitParseChan chan<- SiteNode,
 			if len(seg) == 3 {
 				defaultSuffix = seg[2][0 : len(seg[2])-1]
 			}
+			tagInfo, _ := doc.Has(curNode.InfoText).First().Html()
+			fmt.Println("url:", curNode.Url, ", selector:", curNode.InfoText, "TagInfo:\n", tagInfo)
 			doc.Add(sel).Each(func(i int, sel *goquery.Selection) {
 				if attrVal, exist := sel.Attr(attr); exist {
 					url := GetFullNormalizeUrl(curNode.Url, attrVal)
@@ -121,22 +168,30 @@ func (s Spider) parseNext(waitParseChan chan<- SiteNode,
 						suffix = seg[len(seg)-1]
 					}
 					savePath := s.storePath + "/" + md5sum + "." + suffix
-					retryDownload := func() error {
-						cmd := exec.Command("wget", url, "-O", savePath)
-						cmd.Start()
-						err := cmd.Wait()
-						return err
+					if s.spiderMem.Exist(savePath) {
+						return
 					}
-					n := 0
-					var err error
-					for err = retryDownload(); err != nil && n < 3; n++ {
-						time.Sleep(5 * time.Second)
-						log.Println("retry ["+url+"]", n, "times")
-					}
-					if err != nil {
-						log.Fatal("Download ["+url+"] failed, error is:\n", err)
+					fmt.Println("trying get img:", url)
+					client := http.Client{}
+					if resp, err := client.Get(url); err == nil {
+						body := resp.Body
+						defer body.Close()
+						if buffer, err := ioutil.ReadAll(body); len(buffer) > 0 && err == nil {
+							if err := ioutil.WriteFile(savePath, buffer, 0666); err == nil {
+								info := ResourceInfo{
+									ResourceUrl:  url,
+									ResourceInfo: tagInfo,
+								}
+								s.spiderMem.Set(md5sum, info)
+								log.Println("save image:", url, "as", savePath, "success! info is:", info)
+							} else {
+								log.Fatal("save image:", url, "as", savePath, "failed!\n", err)
+							}
+						} else {
+							log.Fatal("read url["+url+"] with bytes len =", len(buffer), ", error:\n", err)
+						}
 					} else {
-						log.Println("Download ["+url+"] Success, save in:", savePath)
+						log.Fatal("get url:", url, "fail, \n", err)
 					}
 				}
 			})

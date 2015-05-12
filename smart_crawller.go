@@ -13,10 +13,11 @@ func main() {
 				IsContainer:  true,
 				NextSelector: "div.watefall_pin.PinImage img[src][jpeg]",
 				NextNode:     nil,
+				InfoText:     "div.pin_subtag_t>span.fr.tag_link",
 			}
 		},
 	}
 	target := []spider.SiteNode{digu}
-	spd := spider.NewSpider(target, 4, "/Users/flybywind/Downloads/tmp")
+	spd := spider.NewSpider(target, 1, "/Users/flybywind/Downloads/tmp")
 	spd.Run()
 }

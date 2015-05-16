@@ -7,7 +7,12 @@ import (
 
 func TestSpiderHistoryMem(t *testing.T) {
 	sm := spider.SpiderHistoryMem{}
-	sm.Init("test_spiderHistory.mem")
+	if sm.Init("test") == true {
+		t.Log("create test_spiderHistory success")
+	} else {
+		t.Fatal("create test_spiderHistory failed")
+		return
+	}
 
 	key := "xyz"
 	if sm.Exist(key) == true {
@@ -15,7 +20,7 @@ func TestSpiderHistoryMem(t *testing.T) {
 	} else {
 		t.Log("#1 pass")
 	}
-	sm.Set(key, spider.ResourceInfo{ResourceInfo: "test"})
+	sm.Set(spider.ResourceInfo{Md5: key, ResourceInfo: "test"})
 	if sm.Exist(key) == false {
 		t.Fatal("#2 key should exist!")
 	} else {
@@ -33,10 +38,24 @@ func TestSpiderHistoryMem(t *testing.T) {
 	sm.Save()
 
 	sm2 := spider.SpiderHistoryMem{}
-	sm2.Init("test_spiderHistory.mem")
+	sm2.Init("test")
 	if sm2.Exist(key) == false {
 		t.Fatal("#4 save failed")
 	} else {
 		t.Log("#4 pass")
+	}
+}
+
+func TestResourceString(t *testing.T) {
+	r := spider.ResourceInfo{
+		Md5:          "123",
+		ResourceUrl:  "abc",
+		ResourceInfo: "efg",
+	}
+
+	if r.String() == "{Md5: 123, ResourceUrl: abc, ResourceInfo: efg, }" {
+		t.Log("TestResourceString PASS! output is:", r.String())
+	} else {
+		t.Fatal("TestResourceString FAILED! output is:", r.String())
 	}
 }

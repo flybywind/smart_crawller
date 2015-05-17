@@ -5,7 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
-	//	"github.com/PuerkitoBio/purell"
+	"golang.org/x/net/html/charset"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"io/ioutil"
@@ -14,7 +14,6 @@ import (
 	"os"
 	"reflect"
 	"regexp"
-	//	"strconv"
 	"strings"
 )
 
@@ -31,6 +30,7 @@ type SiteNode struct {
 	IsContainer bool
 	InfoText    string
 	TurnPage    string
+	SiblingNum  int
 }
 
 func (n *SiteNode) String() string {
@@ -166,7 +166,7 @@ func (s Spider) waitParseNext(waitParseChan chan<- SiteNode,
 	for {
 		go func() {
 			if err := recover(); err != nil {
-				log.Fatal("Recover in spider parsing, Error:", err)
+				log.Println("Recover in spider parsing, Error:", err)
 			}
 		}()
 		select {
@@ -182,7 +182,7 @@ func (s Spider) waitParseNext(waitParseChan chan<- SiteNode,
 }
 
 func (s Spider) doParse(curNode SiteNode, waitParseChan chan<- SiteNode) {
-	doc, err := goquery.NewDocument(curNode.Url)
+	doc, err := OpenUtf8Html(curNode.Url)
 	if err != nil {
 		// handle error
 		log.Println("get url[", curNode.Url, "] failed!")
@@ -212,17 +212,17 @@ func (s Spider) doParse(curNode SiteNode, waitParseChan chan<- SiteNode) {
 				if len(seg) > 1 {
 					suffix = seg[len(seg)-1]
 				}
-				savePath := s.storePath + "/" + md5sum + "." + suffix
-
 				if s.spiderMem.Exist(md5sum) {
 					log.Println("skip older one:", url)
 					return
 				}
 				fmt.Println("trying get img:", url)
 				client := http.Client{}
+
 				if resp, err := client.Get(url); err == nil {
 					body := resp.Body
 					defer body.Close()
+					savePath := s.storePath + "/" + md5sum + "." + suffix
 					if buffer, err := ioutil.ReadAll(body); len(buffer) > 0 && err == nil {
 						if err := ioutil.WriteFile(savePath, buffer, 0666); err == nil {
 							info := ResourceInfo{
@@ -233,13 +233,13 @@ func (s Spider) doParse(curNode SiteNode, waitParseChan chan<- SiteNode) {
 							s.spiderMem.Set(info)
 							log.Println("save image:", url, "as", savePath, "success! info is:\n"+info.String())
 						} else {
-							log.Fatal("save image:", url, "as", savePath, " failed!\nError:", err)
+							log.Println("save image:", url, "as", savePath, " failed!\nError:", err)
 						}
 					} else {
-						log.Fatal("read url["+url+"] with bytes len =", len(buffer), ", error:\n", err)
+						log.Println("read url["+url+"] with bytes len =", len(buffer), ", error:\n", err)
 					}
 				} else {
-					log.Fatal("get url:", url, "fail, \n", err)
+					log.Println("get url:", url, "fail, \n", err)
 				}
 			}
 		})
@@ -259,18 +259,19 @@ func (s Spider) doParse(curNode SiteNode, waitParseChan chan<- SiteNode) {
 			if href, exist := turnSel.Attr("href"); exist {
 				leftIndx, rightIndx, e := FindTurnPage(href, curNode.TurnPage)
 				if e == nil {
-					// 往后翻10页
-					for i := 1; i < 11; i++ {
+					// 往后翻页
+					for i := 1; i < curNode.SiblingNum+1; i++ {
 						nextNode := curNode.ChildNode()
 						nextNode.Url = GetFullNormalizeUrl(curNode.Url, fmt.Sprintf("%s%d%s",
 							href[:leftIndx], i, href[rightIndx:]))
 						allParseOut = append(allParseOut, nextNode)
+						checkDeadLock.Println("create new sibling url:", nextNode.Url)
 					}
 				} else {
 					log.Fatal("FindTurnPage not match!")
 				}
 			} else {
-				log.Fatal("cant find href for turn page in", curNode.Url)
+				log.Fatal("cant find href for turn page in ", curNode.Url, " selector: ", sel)
 			}
 		}
 
@@ -324,4 +325,25 @@ func FindTurnPage(href, regex string) (leftIndx, rightIndx int, err error) {
 		return -1, -1, fmt.Errorf("not found turn page")
 	}
 
+}
+
+func OpenUtf8Html(url string) (*goquery.Document, error) {
+	client := http.Client{}
+	if resp, err := client.Get(url); err == nil {
+		body := resp.Body
+		if rawBytes, err := ioutil.ReadAll(body); err != nil {
+			return nil, err
+		} else {
+			newReader := bytes.NewReader(rawBytes)
+			body.Close()
+			utf8Reader, err := charset.NewReader(newReader, "gbk")
+			if err == nil {
+				return goquery.NewDocumentFromReader(utf8Reader)
+			} else {
+				return nil, err
+			}
+		}
+	} else {
+		return nil, err
+	}
 }

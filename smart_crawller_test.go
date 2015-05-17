@@ -1,6 +1,8 @@
-package smart_crawller_test
+package main
 
 import (
+	"crypto/md5"
+	"fmt"
 	"smart_crawller/spider"
 	"testing"
 )
@@ -86,4 +88,25 @@ func TestFindTurnPage(t *testing.T) {
 	} else {
 		t.Fatal("TestFindTurnPage FAILED, ERROR:", e)
 	}
+}
+
+func TestEncodingHtml(t *testing.T) {
+	url := "http://photo.poco.cn/like//index-upi-tpl_type-hot-channel_id-10.html#list/index-upi-p-6-tpl_type-hot-channel_id-10.html#list"
+	if doc, err := spider.OpenUtf8Html(url); err == nil {
+		infoText := "div ul.item-nav.f-tdn.fl li.cur>a.click"
+		tagName := doc.Find(infoText).First().Text()
+		if tagName == "美食" {
+			t.Log("TestEncodingHtml pass:", tagName)
+		} else {
+			t.Fatal("TestEncodingHtml pass:", tagName)
+		}
+	} else {
+		t.Fatal("TestEncodingHtml fail with not open url")
+	}
+}
+
+func TestMd5Sum(t *testing.T) {
+	url := "http://image17-c.poco.cn/mypoco/myphoto/20150505/13/1745744532015050513254007_145.jpg?683x1024_120"
+	md5sum := fmt.Sprintf("%x", md5.Sum([]byte(url)))
+	t.Log("md5sum for ", url, " is ", md5sum)
 }

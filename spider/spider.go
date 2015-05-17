@@ -5,7 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/PuerkitoBio/purell"
+	//	"github.com/PuerkitoBio/purell"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"io/ioutil"
@@ -13,7 +13,8 @@ import (
 	"net/http"
 	"os"
 	"reflect"
-	"strconv"
+	"regexp"
+	//	"strconv"
 	"strings"
 )
 
@@ -27,10 +28,9 @@ type SiteNode struct {
 	ChildNode     func() SiteNode
 	// 如果是container，那么NextSelector就是target了
 	// InfoText就可能有值
-	IsContainer   bool
-	ContainerId int
-	InfoText      string
-	TurnPage string
+	IsContainer bool
+	InfoText    string
+	TurnPage    string
 }
 
 func (n *SiteNode) String() string {
@@ -139,11 +139,10 @@ func NewSpider(targets []SiteNode, thread_num int, store_path string) *Spider {
 func (spd Spider) Run() {
 	spd.spiderMem.Init("spider_mem")
 	defer spd.spiderMem.Save()
-	go func() {
-		for _, target := range spd.targetSite {
-			spd.waitParseChan <- target
-		}
-	}()
+	// init spd.waitParseChan by root node
+	for _, target := range spd.targetSite {
+		spd.doParse(target, spd.waitParseChan)
+	}
 
 	go func() {
 		for node := range spd.waitParseChan {
@@ -153,7 +152,7 @@ func (spd Spider) Run() {
 	}()
 
 	for i := 0; i < spd.threadNum; i++ {
-		go spd.parseNext(spd.waitParseChan, spd.workersChan)
+		go spd.waitParseNext(spd.waitParseChan, spd.workersChan)
 	}
 	for i := 0; i < spd.threadNum; i++ {
 		<-spd.doneChan
@@ -162,91 +161,92 @@ func (spd Spider) Run() {
 
 }
 
-func (s Spider) parseNext(waitParseChan chan<- SiteNode,
+func (s Spider) waitParseNext(waitParseChan chan<- SiteNode,
 	workersChan <-chan SiteNode) {
-	for curNode := range workersChan {
-		checkDeadLock.Println("entry workersChan")
+	for {
 		go func() {
 			if err := recover(); err != nil {
 				log.Fatal("Recover in spider parsing, Error:", err)
 			}
 		}()
-		doc, err := goquery.NewDocument(curNode.Url)
-		if err != nil {
-			// handle error
-			log.Println("get url[", curNode.Url, "] failed!")
+		select {
+		case curNode := <-workersChan:
+			checkDeadLock.Println("entry workersChan")
+			s.doParse(curNode, waitParseChan)
+		default:
+			checkDeadLock.Println("Finish one worker!")
+			s.doneChan <- true
 			return
 		}
-		checkDeadLock.Println("Open url:", curNode.Url)
-		sel := curNode.ChildSelector
-		if curNode.IsContainer {
-			seg := strings.Split(sel, "[")
-			if len(seg) < 2 {
-				panic("容器中的目标资源选择子格式错误，期望格式为： selector[attr][suffix]!")
-			}
-			sel := seg[0]
-			attr := seg[1][0 : len(seg[1])-1]
-			defaultSuffix := ""
-			if len(seg) == 3 {
-				defaultSuffix = seg[2][0 : len(seg[2])-1]
-			}
-			tagInfo := doc.Find(curNode.InfoText).Text()
-			tagInfo = strings.TrimSpace(tagInfo)
-			doc.Find(sel).Each(func(i int, sel *goquery.Selection) {
-				if attrVal, exist := sel.Attr(attr); exist {
-					url := GetFullNormalizeUrl(curNode.Url, attrVal)
-					md5sum := fmt.Sprintf("%x", md5.Sum([]byte(url)))
-					seg := strings.Split(url, ".")
-					suffix := defaultSuffix
-					if len(seg) > 1 {
-						suffix = seg[len(seg)-1]
-					}
-					savePath := s.storePath + "/" + md5sum + "." + suffix
+	}
+}
 
-					if s.spiderMem.Exist(md5sum) {
-						log.Println("skip older one:", url)
-						return
-					}
-					fmt.Println("trying get img:", url)
-					client := http.Client{}
-					if resp, err := client.Get(url); err == nil {
-						body := resp.Body
-						defer body.Close()
-						if buffer, err := ioutil.ReadAll(body); len(buffer) > 0 && err == nil {
-							if err := ioutil.WriteFile(savePath, buffer, 0666); err == nil {
-								info := ResourceInfo{
-									Md5:          md5sum,
-									ResourceUrl:  url,
-									ResourceInfo: tagInfo,
-								}
-								s.spiderMem.Set(info)
-								log.Println("save image:", url, "as", savePath, "success! info is:\n"+info.String())
-							} else {
-								log.Fatal("save image:", url, "as", savePath, " failed!\nError:", err)
+func (s Spider) doParse(curNode SiteNode, waitParseChan chan<- SiteNode) {
+	doc, err := goquery.NewDocument(curNode.Url)
+	if err != nil {
+		// handle error
+		log.Println("get url[", curNode.Url, "] failed!")
+		return
+	}
+	checkDeadLock.Println("Open url:", curNode.Url)
+	sel := curNode.ChildSelector
+	if curNode.IsContainer {
+		seg := strings.Split(sel, "[")
+		if len(seg) < 2 {
+			panic("容器中的目标资源选择子格式错误，期望格式为： selector[attr][suffix]!")
+		}
+		sel := seg[0]
+		attr := seg[1][0 : len(seg[1])-1]
+		defaultSuffix := ""
+		if len(seg) == 3 {
+			defaultSuffix = seg[2][0 : len(seg[2])-1]
+		}
+		tagInfo := doc.Find(curNode.InfoText).Text()
+		tagInfo = strings.TrimSpace(tagInfo)
+		doc.Find(sel).Each(func(i int, sel *goquery.Selection) {
+			if attrVal, exist := sel.Attr(attr); exist {
+				url := GetFullNormalizeUrl(curNode.Url, attrVal)
+				md5sum := fmt.Sprintf("%x", md5.Sum([]byte(url)))
+				seg := strings.Split(url, ".")
+				suffix := defaultSuffix
+				if len(seg) > 1 {
+					suffix = seg[len(seg)-1]
+				}
+				savePath := s.storePath + "/" + md5sum + "." + suffix
+
+				if s.spiderMem.Exist(md5sum) {
+					log.Println("skip older one:", url)
+					return
+				}
+				fmt.Println("trying get img:", url)
+				client := http.Client{}
+				if resp, err := client.Get(url); err == nil {
+					body := resp.Body
+					defer body.Close()
+					if buffer, err := ioutil.ReadAll(body); len(buffer) > 0 && err == nil {
+						if err := ioutil.WriteFile(savePath, buffer, 0666); err == nil {
+							info := ResourceInfo{
+								Md5:          md5sum,
+								ResourceUrl:  url,
+								ResourceInfo: tagInfo,
 							}
+							s.spiderMem.Set(info)
+							log.Println("save image:", url, "as", savePath, "success! info is:\n"+info.String())
 						} else {
-							log.Fatal("read url["+url+"] with bytes len =", len(buffer), ", error:\n", err)
+							log.Fatal("save image:", url, "as", savePath, " failed!\nError:", err)
 						}
 					} else {
-						log.Fatal("get url:", url, "fail, \n", err)
+						log.Fatal("read url["+url+"] with bytes len =", len(buffer), ", error:\n", err)
 					}
-				}
-			})
-
-			if curNode.TurnPage != "" {
-					nextPageUrl := fmt.Sprintf("%s%s%d", curNode.Url, curNode.TurnPage,  curNode.ContainerId+1)
-						nextSibNode := new(SiteNode)
-						*nextSibNode = curNode
-						nextSibNode.Url = nextPageUrl
-						go func() {
-							waitParseChan <- (*nextSibNode)
-							checkDeadLock.Println("send one to waitParseChan:", nextSibNode)
-						}()
-					}
+				} else {
+					log.Fatal("get url:", url, "fail, \n", err)
 				}
 			}
-		} else {
-			allParseOut := []SiteNode{}
+		})
+
+	} else {
+		allParseOut := []SiteNode{}
+		if curNode.TurnPage == "" {
 			doc.Find(sel).Each(func(i int, sel *goquery.Selection) {
 				if href, exist := sel.Attr("href"); exist {
 					nextNode := curNode.ChildNode()
@@ -254,41 +254,74 @@ func (s Spider) parseNext(waitParseChan chan<- SiteNode,
 					allParseOut = append(allParseOut, nextNode)
 				}
 			})
-			// parse next out:
-			go func() {
-				for _, nextNode := range allParseOut {
-					waitParseChan <- nextNode
-					log.Println("find an intemediat page:", nextNode.Url)
-					checkDeadLock.Println("send one to waitParseChan:", nextNode.Url)
+		} else {
+			turnSel := doc.Find(sel).First()
+			if href, exist := turnSel.Attr("href"); exist {
+				leftIndx, rightIndx, e := FindTurnPage(href, curNode.TurnPage)
+				if e == nil {
+					// 往后翻10页
+					for i := 1; i < 11; i++ {
+						nextNode := curNode.ChildNode()
+						nextNode.Url = GetFullNormalizeUrl(curNode.Url, fmt.Sprintf("%s%d%s",
+							href[:leftIndx], i, href[rightIndx:]))
+						allParseOut = append(allParseOut, nextNode)
+					}
+				} else {
+					log.Fatal("FindTurnPage not match!")
 				}
-			}()
+			} else {
+				log.Fatal("cant find href for turn page in", curNode.Url)
+			}
 		}
+
+		// parse next out:
+		go func() {
+			for _, nextNode := range allParseOut {
+				waitParseChan <- nextNode
+				log.Println("find an intemediat page:", nextNode.Url)
+				checkDeadLock.Println("send one to waitParseChan:", nextNode.Url)
+			}
+		}()
 	}
-	checkDeadLock.Println("Finish one worker!")
-	s.doneChan <- true
 }
 
 func GetFullNormalizeUrl(base string, part string) string {
-	partNorm, err := purell.NormalizeURLString(part, purell.FlagsUsuallySafeGreedy)
-	if err == nil && len(partNorm) > 8 &&
+	partNorm := part // err := purell.NormalizeURLString(part, purell.FlagsUsuallySafeGreedy)
+	if len(partNorm) > 8 &&
 		(partNorm[0:7] == "http://" ||
 			partNorm[0:8] == "https://") {
-		return strings.ToLower(partNorm)
+		return partNorm
 	}
 
 	if len(part) > 0 && part[0] == '/' {
 		seg := strings.Split(base, "/")
 		host := strings.Join(seg[0:3], "/")
-		ret, err := purell.NormalizeURLString(host+part, purell.FlagsUsuallySafeGreedy)
+		/*ret, err := purell.NormalizeURLString(host+part, purell.FlagsUsuallySafeGreedy)
 		if err != nil {
 			panic(err)
-		}
-		return strings.ToLower(ret)
+		}*/
+		//return strings.ToLower(ret)
+		return host + part
 	} else {
-		ret, err := purell.NormalizeURLString(base+"/"+part, purell.FlagsUsuallySafeGreedy)
+		/*ret, err := purell.NormalizeURLString(base+"/"+part, purell.FlagsUsuallySafeGreedy)
 		if err != nil {
 			panic(err)
 		}
-		return strings.ToLower(ret)
+		return strings.ToLower(ret)*/
+		return base + "/" + part
 	}
+}
+
+func FindTurnPage(href, regex string) (leftIndx, rightIndx int, err error) {
+	patt := regexp.MustCompile(regex)
+	matchIndx := patt.FindStringSubmatchIndex(href)
+
+	if matchIndx != nil && len(matchIndx) == 4 {
+		leftIndx = matchIndx[2]
+		rightIndx = matchIndx[3]
+		return leftIndx, rightIndx, nil
+	} else {
+		return -1, -1, fmt.Errorf("not found turn page")
+	}
+
 }
